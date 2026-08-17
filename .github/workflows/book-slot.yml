@@ -1,0 +1,62 @@
+name: Book Goethe Slot
+
+# ─────────────────────────────────────────────────────────────
+#  FREE Goethe booking runner (GitHub Actions)
+#  Runs on GitHub's cloud runners (clean IP, not blocked by Goethe)
+#
+#  SETUP (5 min, free):
+#   1. Push this repo to GitHub (Public)
+#   2. Settings → Secrets and variables → Actions → New repository secret:
+#        - CONFIG_CSV      = the FULL content of your config.csv
+#                            (name,email,password,level,city,dob,booking_datetime,...)
+#      (On Windows PowerShell copy with a header row; see config.example.csv)
+#   3. This workflow runs the bot when you trigger it manually
+#      (or via scheduled cron below when a slot is expected)
+#
+#  To run: Actions tab → "Book Goethe Slot" → "Run workflow"
+# ─────────────────────────────────────────────────────────────
+on:
+  workflow_dispatch:        # manual trigger (click "Run workflow")
+  schedule:
+    # ── EDIT THIS to your booking window ──
+    # Example: every 5 min during 08:55-09:05 (Pakistan time = UTC+5)
+    # 5 fields: minute hour dom month dow
+    - cron: "*/10 * * * *"   # every 10 min (change to your window)
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Chrome + deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends google-chrome-stable unzip
+          pip install -r requirements.txt
+
+      - name: Write config.csv from secret
+        run: |
+          echo "$CONFIG_CSV" > config.csv
+          echo "config.csv written ($(wc -l < config.csv) lines)"
+          head -1 config.csv
+        env:
+          CONFIG_CSV: ${{ secrets.CONFIG_CSV }}
+
+      - name: Run booking bot (headless)
+        run: |
+          python booking_helper.py --config config.csv --headless true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Show result
+        if: always()
+        run: |
+          ls -la bot_logs.ndjson 2>/dev/null && tail -30 bot_logs.ndjson || true
+          ls -la *.png 2>/dev/null || true

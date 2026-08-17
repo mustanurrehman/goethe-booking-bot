@@ -1,0 +1,24 @@
+__pycache__
+*.pyc
+*.log
+.venv
+venv
+*.png
+*.screenshot
+debug_*
+confirmation_*.png
+.env
+
+config.csv
+
+# Local Netlify folder
+.netlify
+
+bot_data.db
+bot_data.db-*
+*.ndjson
+SESSION_SUMMARY.md
+presentation/
+*.mp4
+*.pptx
+goethe-bot-sa.json

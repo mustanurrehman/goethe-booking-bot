@@ -1,0 +1,106 @@
+{
+  "SUCCESS": true,
+  "RECORDCOUNT": 10,
+  "DATA": [
+    {
+      "languageLevel": "A1",
+      "locationName": "Karachi",
+      "startDate": "20.07.2026",
+      "endDate": "",
+      "bookFrom": "01.06.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 14,500",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzsd1.cfm"
+    },
+    {
+      "languageLevel": "A1",
+      "locationName": "Lahore",
+      "startDate": "10.08.2026",
+      "endDate": "",
+      "bookFrom": "22.06.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 14,500",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzsd1.cfm"
+    },
+    {
+      "languageLevel": "A1",
+      "locationName": "Islamabad",
+      "startDate": "07.09.2026",
+      "endDate": "",
+      "bookFrom": "21.07.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 14,500",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzsd1.cfm"
+    },
+    {
+      "languageLevel": "A1",
+      "locationName": "Karachi",
+      "startDate": "05.10.2026",
+      "endDate": "",
+      "bookFrom": "17.08.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 14,500",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzsd1.cfm"
+    },
+    {
+      "languageLevel": "A2",
+      "locationName": "Lahore",
+      "startDate": "27.07.2026",
+      "endDate": "",
+      "bookFrom": "08.06.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 16,000",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzsd2.cfm"
+    },
+    {
+      "languageLevel": "A2",
+      "locationName": "Karachi",
+      "startDate": "24.08.2026",
+      "endDate": "",
+      "bookFrom": "06.07.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 16,000",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzsd2.cfm"
+    },
+    {
+      "languageLevel": "A2",
+      "locationName": "Islamabad",
+      "startDate": "21.09.2026",
+      "endDate": "",
+      "bookFrom": "10.08.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 16,000",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzsd2.cfm"
+    },
+    {
+      "languageLevel": "B1",
+      "locationName": "Islamabad",
+      "startDate": "13.07.2026",
+      "endDate": "",
+      "bookFrom": "01.06.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 18,500",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzb1.cfm"
+    },
+    {
+      "languageLevel": "B1",
+      "locationName": "Lahore",
+      "startDate": "17.08.2026",
+      "endDate": "",
+      "bookFrom": "29.06.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 18,500",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzb1.cfm"
+    },
+    {
+      "languageLevel": "B1",
+      "locationName": "Karachi",
+      "startDate": "14.09.2026",
+      "endDate": "",
+      "bookFrom": "03.08.2026",
+      "bookFromTimeFormatted": "09:00",
+      "price": "PKR 18,500",
+      "buttonLink": "https://www.goethe.de/ins/pk/en/spr/prf/gzb1.cfm"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+[build]
+  publish = "frontend"
+  command = "echo static"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+  force = false

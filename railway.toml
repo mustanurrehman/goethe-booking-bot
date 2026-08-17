@@ -1,0 +1,11 @@
+[service]
+name = "goethe-booking-bot"
+
+[build]
+builder = "dockerfile"
+dockerfile_path = "Dockerfile"
+
+[deploy]
+restartPolicyType = "never"
+healthcheckPath = "/health"
+healthcheckTimeout = 600

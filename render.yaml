@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────
+#  Goethe Booking Bot — EASY DEPLOYMENT
+#  Render.com (Free) + GitHub
+# ─────────────────────────────────────────────
+# How to use: see EASY_START.md
+#
+# Option A (recommended, free): GitHub Actions (book-slot.yml)
+#   - Runs on GitHub clean IPs, no hosting needed, free
+# Option B (below): Render web service (persistent dashboard)
+#
+# Render free web services sleep after 15 min idle → NOT good for
+# a poller that waits hours. Use GitHub Actions cron for the actual
+# booking, and only use Render if you need a 24/7 dashboard.
+
+services:
+  - type: web
+    name: goethe-booking-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+      - key: ENFORCE_HTTPS
+        value: "true"
+      - key: AUTH_EMAIL
+        value: hamzarafiq655@gmail.com
+      - key: AUTH_PASSWORD
+        value: change-me-strong
+      - key: POLL_INTERVAL
+        value: "10"
+      - key: PROXY_LIST
+        value: ""
