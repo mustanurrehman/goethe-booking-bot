@@ -147,22 +147,11 @@ def _classify_error(exc: Exception) -> str:
         return "timeout"
     return "generic"
 
-# ── Exam schedule (Pakistan 2026) ──
-EXAM_SCHEDULE = [
-    {"level": "A1", "city": "Islamabad", "exam_date": "18-19 Jul 2026", "registration_period": "26 Jun - 17 Jul 2026", "bookable_from": "26.06.2026", "price_full": "PKR 25,000", "price_reduced": "PKR 16,500", "status": "upcoming"},
-    {"level": "A1", "city": "Lahore", "exam_date": "24 Jul 2026", "registration_period": "3 Jul - 23 Jul 2026", "bookable_from": "03.07.2026", "price_full": "PKR 25,000", "price_reduced": "PKR 16,500", "status": "upcoming"},
-    {"level": "A1", "city": "Karachi", "exam_date": "31 Jul - 1 Aug 2026", "registration_period": "17 Jul - 30 Jul 2026", "bookable_from": "17.07.2026", "price_full": "PKR 25,000", "price_reduced": "PKR 16,500", "status": "upcoming"},
-    {"level": "A1", "city": "Lahore", "exam_date": "21 Aug 2026", "registration_period": "7 Aug - 20 Aug 2026", "bookable_from": "07.08.2026", "price_full": "PKR 25,000", "price_reduced": "PKR 16,500", "status": "upcoming"},
-    {"level": "A2", "city": "Karachi", "exam_date": "3-4 Jul 2026", "registration_period": "19 Jun - 2 Jul 2026", "bookable_from": "19.06.2026", "price_full": "PKR 25,000", "price_reduced": "PKR 16,500", "status": "upcoming"},
-    {"level": "A2", "city": "Islamabad", "exam_date": "18-19 Jul 2026", "registration_period": "26 Jun - 17 Jul 2026", "bookable_from": "26.06.2026", "price_full": "PKR 25,000", "price_reduced": "PKR 16,500", "status": "upcoming"},
-    {"level": "A2", "city": "Lahore", "exam_date": "25-26 Jul 2026", "registration_period": "3 Jul - 23 Jul 2026", "bookable_from": "03.07.2026", "price_full": "PKR 25,000", "price_reduced": "PKR 16,500", "status": "upcoming"},
-    {"level": "B1", "city": "Lahore", "exam_date": "20-21 Jun 2026", "registration_period": "5 Jun - 18 Jun 2026", "bookable_from": "fully_booked", "price_full": "PKR 30,000", "price_reduced": "PKR 25,000", "status": "fully_booked"},
-    {"level": "B1", "city": "Karachi", "exam_date": "3-4 Jul 2026", "registration_period": "19 Jun - 2 Jul 2026", "bookable_from": "19.06.2026", "price_full": "PKR 30,000", "price_reduced": "PKR 25,000", "status": "upcoming"},
-    {"level": "B1", "city": "Islamabad", "exam_date": "18-19 Jul 2026", "registration_period": "26 Jun - 17 Jul 2026", "bookable_from": "26.06.2026", "price_full": "PKR 30,000", "price_reduced": "PKR 25,000", "status": "upcoming"},
-    {"level": "B1", "city": "Lahore", "exam_date": "25-26 Jul 2026", "registration_period": "3 Jul - 23 Jul 2026", "bookable_from": "03.07.2026", "price_full": "PKR 30,000", "price_reduced": "PKR 25,000", "status": "upcoming"},
-    {"level": "B1", "city": "Karachi", "exam_date": "31 Jul - 1 Aug 2026", "registration_period": "17 Jul - 29 Jul 2026", "bookable_from": "17.07.2026", "price_full": "PKR 30,000", "price_reduced": "PKR 25,000", "status": "upcoming"},
-    {"level": "B1", "city": "Lahore", "exam_date": "22-23 Aug 2026", "registration_period": "7 Aug - 20 Aug 2026", "bookable_from": "07.08.2026", "price_full": "PKR 30,000", "price_reduced": "PKR 25,000", "status": "upcoming"},
-]
+# ── Exam schedule (Pakistan) ──
+# Static schedule is intentionally empty: hardcoded exam dates go stale fast.
+# Live dates come from goethe_scraper.get_schedule() (ScrapingBee / curl_cffi /
+# Playwright / pk_fallback.json). get_schedule() here is only a display hook.
+EXAM_SCHEDULE: List[Dict] = []
 
 
 def get_schedule() -> list:
@@ -846,6 +835,21 @@ def check_slot_availability(student: Dict[str, str], logger: logging.Logger) -> 
         time.sleep(3)
         from selenium.webdriver.common.by import By
         from selenium.common.exceptions import NoSuchElementException, TimeoutException
+
+        # ── Diagnostic: report exactly what the server answered ──
+        final_url = driver.current_url
+        title = driver.title
+        logger.info("PAGE LOADED: title='%s' url=%s", (title or "")[:100], final_url[:120])
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+            logger.info("BODY(first 800): %s", (body_text or "")[:800].replace("\n", " | "))
+        except Exception:
+            logger.info("BODY: (could not read)")
+        if is_blocked_response(driver):
+            result["message"] = f"BLOCKED/WAF: title='{title}' url={final_url}"
+            logger.warning("CHECK RESULT: %s", result["message"])
+            return result
+
         try:
             close_btn = driver.find_element(By.CSS_SELECTOR, "button.close, .modal-close, [data-dismiss='modal']")
             close_btn.click()
@@ -864,8 +868,10 @@ def check_slot_availability(student: Dict[str, str], logger: logging.Logger) -> 
             result["available"] = True
             result["slots_found"] = len(slots)
             result["message"] = f"Found {len(slots)} bookable slot(s) for {student.get('name', '?')}"
+            logger.info("CHECK RESULT: %s", result["message"])
         else:
             result["message"] = f"No bookable slots detected for {student.get('name', '?')}"
+            logger.info("CHECK RESULT: %s", result["message"])
         result["details"] = [{"text": s.get_text(strip=True)[:100]} for s in slots[:10]]
     except Exception as exc:
         logger.warning("Slot pre-check failed: %s", exc)
