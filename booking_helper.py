@@ -200,6 +200,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", type=parse_bool, default=False, help="Run Chrome headless")
     parser.add_argument("--telegram-token", default="", help="Telegram bot token")
     parser.add_argument("--telegram-chat-id", default="", help="Telegram chat ID")
+    parser.add_argument("--immediate", action="store_true",
+                        help="Skip the scheduled wait and attempt to book now (for tests / GitHub Actions)")
+    parser.add_argument("--check-only", action="store_true",
+                        help="Only pre-check slot availability / page reachability, don't book")
     return parser.parse_args()
 
 
@@ -830,7 +834,7 @@ def smart_retry(student: Dict[str, str], use_headless: bool, logger: logging.Log
 def check_slot_availability(student: Dict[str, str], logger: logging.Logger) -> Dict:
     """Quick pre-check: open the exam page and report available slots.
     Returns {available: bool, slots_found: int, message: str, details: List[Dict]}."""
-    result = {"available": False, "slots_found": 0, "message": "", "details": []}
+    result = {"available": False, "slots_found": 0, "message": "", "details": [], "status": "check"}
     driver = None
     try:
         from bs4 import BeautifulSoup
@@ -2155,7 +2159,12 @@ def main() -> int:
     def run_one(s: Dict):
         key = f"{s.get('name', '?')}|{s.get('level', s.get('exam_level', '?'))}|{s.get('city', '?')}"
         student_logger = setup_logger(f"bot_{s.get('name', 'unknown')}_{s.get('level', '?')}")
-        result = smart_retry(s, args.headless, student_logger, threading.Event())
+        if args.check_only:
+            result = check_slot_availability(s, student_logger)
+            result.update({k: s.get(k, "") for k in ("name", "email", "level", "city")})
+        else:
+            result = smart_retry(s, args.headless, student_logger, threading.Event(),
+                                 immediate=args.immediate)
         with results_lock:
             results_list.append(result)
         db.update_student_status(key, result.get("status", "failed"), result)

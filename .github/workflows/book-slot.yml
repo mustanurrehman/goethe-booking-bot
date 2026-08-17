@@ -14,19 +14,46 @@ name: Book Goethe Slot
 #      (or via scheduled cron below when a slot is expected)
 #
 #  To run: Actions tab → "Book Goethe Slot" → "Run workflow"
+#
+#  IMPORTANT — the scheduler:
+#   * The bot's booking_datetime means "wait until this time, then book".
+#   * GitHub Actions kills a run after 15 min, so a run started before
+#     booking_datetime will TIME OUT and do nothing.
+#   * So the workflow ALWAYS passes --immediate (don't wait; book right now).
+#     Use the schedule below so the run fires DURING your booking window.
+#   * Timezone everywhere is Asia/Karachi (set by TZ env below), so write
+#     cron times in Pakistan local time.
+#     Example: slot opens 11:12 PKT daily → cron: 7,12,17 11 * * *  (11:07,11:12,11:17 PKT)
+#
+#  Probe mode:
+#   * Check "probe only" when you want to test whether the runner's IP can
+#     reach www.goethe.de and see "Book Now" — WITHOUT booking.
 # ─────────────────────────────────────────────────────────────
 on:
   workflow_dispatch:        # manual trigger (click "Run workflow")
+    inputs:
+      probe_only:
+        description: 'Probe only — check slots/page reachable (no booking)'
+        required: false
+        type: boolean
+        default: false
+      immediate:
+        description: 'Book now, skip waiting until booking_datetime (recommended for Actions)'
+        required: false
+        type: boolean
+        default: true
   schedule:
-    # ── EDIT THIS to your booking window ──
-    # Example: every 5 min during 08:55-09:05 (Pakistan time = UTC+5)
+    # ── EDIT THIS to your booking window (Pakistan local time) ──
     # 5 fields: minute hour dom month dow
-    - cron: "*/10 * * * *"   # every 10 min (change to your window)
+    # Example: every 5 min during 11:05-11:20 PKT:
+    - cron: "5,10,15,20 11 * * *"   # change to your actual window
 
 jobs:
   book:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      TZ: Asia/Karachi
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +77,11 @@ jobs:
 
       - name: Run booking bot (headless)
         run: |
-          python booking_helper.py --config config.csv --headless true
+          if [ "${{ inputs.probe_only }}" = "true" ]; then
+            python booking_helper.py --config config.csv --check-only
+          else
+            python booking_helper.py --config config.csv --headless true ${{ inputs.immediate == 'true' && '--immediate' || '' }}
+          fi
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
