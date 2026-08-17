@@ -1,5 +1,5 @@
 selenium>=4.10
-undetected-chromedriver>=3.5.0
+undetected-chromedriver>=3.5.5
 curl_cffi>=0.7.0
 webdriver-manager>=4.0.0
 plyer>=2.1.0
