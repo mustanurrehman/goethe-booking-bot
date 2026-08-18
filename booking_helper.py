@@ -667,23 +667,35 @@ def human_move_and_click(driver: webdriver.Chrome, element: WebElement) -> None:
         driver.execute_script("arguments[0].removeAttribute('target');", element)
     except Exception:
         pass
-    random_human_delay()
+    try:
+        before = driver.current_url
+    except Exception:
+        before = None
+    random_human_delay(0.0, 0.05)
     actions = ActionChains(driver)
     actions.move_to_element(element)
-    actions.pause(random.uniform(0.05, 0.2))
+    actions.pause(random.uniform(0.0, 0.05))
     actions.move_by_offset(random.randint(-2, 2), random.randint(-2, 2))
-    actions.pause(random.uniform(0.03, 0.1))
+    actions.pause(random.uniform(0.0, 0.03))
     actions.click()
     actions.perform()
+    # JS fallback: some Vue finder buttons ignore ActionChains (overlay) but
+    # react to a native .click(). If the page didn't move, force it.
+    try:
+        time.sleep(0.6)
+        if before is not None and driver.current_url == before:
+            driver.execute_script("arguments[0].click();", element)
+    except Exception:
+        pass
 
 
 # ── Advanced human behavior simulation ──
 
 def random_scroll(driver: webdriver.Chrome):
-    """Small random scroll to mimic reading."""
+    """Small random scroll to mimic reading (fast mode)."""
     delta = random.randint(-150, 300)
     driver.execute_script(f"window.scrollBy(0, {delta});")
-    time.sleep(random.uniform(0.3, 1.2))
+    time.sleep(random.uniform(0.03, 0.1))
 
 
 def random_mouse_wander(driver: webdriver.Chrome):
@@ -703,22 +715,17 @@ def random_mouse_wander(driver: webdriver.Chrome):
 
 
 def human_pause_between_fields():
-    """Pause as if user is reading the next field."""
-    time.sleep(random.uniform(0.4, 1.8))
+    """Pause as if user is reading the next field (fast mode)."""
+    time.sleep(random.uniform(0.05, 0.2))
 
 
 def simulate_human_typing(element: WebElement, text: str) -> None:
-    """Type text with realistic human-like bursts and pauses."""
+    """Type text quickly (fast mode). Clears any existing value first."""
     _force_clear(element)
     element.click()
     for ch in text:
         element.send_keys(ch)
-        if random.random() < 0.08:
-            time.sleep(random.uniform(0.3, 0.9))
-        elif random.random() < 0.03:
-            time.sleep(random.uniform(1.0, 2.5))
-        else:
-            time.sleep(random.uniform(0.04, 0.15))
+        time.sleep(random.uniform(0.004, 0.015))
 
 
 # ── CAPTCHA solving (2Captcha) ──
@@ -1196,9 +1203,7 @@ def wait_and_find(driver: webdriver.Chrome, css_selector: str, timeout: int = 15
 
 def type_slowly(element: WebElement, text: str) -> None:
     _force_clear(element)
-    for ch in text:
-        element.send_keys(ch)
-        time.sleep(random.uniform(0.01, 0.05))
+    element.send_keys(text)
 
 
 def _force_clear(element: WebElement) -> None:
@@ -1231,7 +1236,7 @@ def _force_clear(element: WebElement) -> None:
 
 
 def click_continue_button(driver: webdriver.Chrome, logger: logging.Logger, timeout: int = 90) -> None:
-    random_human_delay(0.3, 0.8)
+    random_human_delay(0.05, 0.2)
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1251,7 +1256,7 @@ def click_continue_button(driver: webdriver.Chrome, logger: logging.Logger, time
 
 
 def click_book_for_myself(driver: webdriver.Chrome, logger: logging.Logger, timeout: int = 90) -> None:
-    random_human_delay(0.3, 0.8)
+    random_human_delay(0.05, 0.2)
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1478,7 +1483,7 @@ def _fill_attempt(driver: webdriver.Chrome, student: Dict[str, str], logger: log
         except (NoSuchElementException, TimeoutException):
             logger.debug("Level dropdown not found")
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
 
         submit_btn = find_element_fallback(driver, "form_submit", timeout=10, logger=logger)
 
@@ -1626,7 +1631,7 @@ def _click_continue_wizard(driver: webdriver.Chrome, logger: logging.Logger, tim
         logger.info("Clicking Continue button in wizard")
         human_move_and_click(driver, btn)
         wait_for_document_ready(driver, timeout=timeout)
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
         return True
     except Exception as exc:
         logger.warning("_click_continue_wizard error: %s", exc)
@@ -1669,7 +1674,7 @@ def _handle_coe_options_modules(driver: webdriver.Chrome, student: Dict[str, str
     logger.info("Coe module-picker (/coe/options) detected")
     try:
         wait_for_document_ready(driver, timeout=25)
-        random_human_delay(0.4, 1.0)
+        random_human_delay(0.1, 0.3)
 
         # Module checkboxes. Pre-checked ones are fine. If none selected,
         # tick the enabled ones (skip rows that say 'Fully booked').
@@ -1686,7 +1691,7 @@ def _handle_coe_options_modules(driver: webdriver.Chrome, student: Dict[str, str
                         if "fully booked" in parent:
                             continue
                         human_move_and_click(driver, c)
-                        random_human_delay(0.2, 0.5)
+                        random_human_delay(0.05, 0.15)
                         selected_hint = parent[:40]
                     except Exception:
                         continue
@@ -1741,7 +1746,7 @@ def _handle_coe_selection_gate(driver: webdriver.Chrome, student: Dict[str, str]
             logger.warning("No clickable 'Book for myself' gate button — skipping gate")
             return False
         wait_for_document_ready(driver, timeout=25)
-        random_human_delay(0.4, 1.0)
+        random_human_delay(0.1, 0.3)
         return True
     except Exception as exc:
         logger.exception("_handle_coe_selection_gate error: %s", exc)
@@ -1903,7 +1908,7 @@ def _fill_step_personal_data_1(driver: webdriver.Chrome, student: Dict[str, str]
     logger.info("══ Wizard Step 1: Personal Data (Name & Birth) ══")
     try:
         wait_for_document_ready(driver, timeout=30)
-        random_human_delay(0.5, 1.5)
+        random_human_delay(0.1, 0.3)
 
         _fill_text_input(driver, ["first_name"], student.get("first_name", student.get("name", "").split()[0] if student.get("name") else ""), logger)
         parts = student.get("name", "").split()
@@ -1940,7 +1945,7 @@ def _fill_step_personal_data_2(driver: webdriver.Chrome, student: Dict[str, str]
     logger.info("══ Wizard Step 2: Personal Data (Address & Motivation) ══")
     try:
         wait_for_document_ready(driver, timeout=30)
-        random_human_delay(0.5, 1.5)
+        random_human_delay(0.1, 0.3)
 
         _fill_select_by_visible(driver, ["country_dropdown"], student.get("country", "Pakistan"), logger)
         _fill_text_input(driver, ["postal_code"], student.get("postal_code", ""), logger)
@@ -1972,13 +1977,13 @@ def _fill_step_payment(driver: webdriver.Chrome, student: Dict[str, str],
     logger.info("══ Wizard Step 3: Payment Method ══")
     try:
         wait_for_document_ready(driver, timeout=30)
-        random_human_delay(0.5, 1.5)
+        random_human_delay(0.1, 0.3)
 
         invoice_el = find_element_fallback(driver, "invoice_option", timeout=6, logger=logger)
         if invoice_el and invoice_el.is_displayed():
             logger.info("Selecting Invoice payment option")
             human_move_and_click(driver, invoice_el)
-            random_human_delay(0.3, 0.8)
+            random_human_delay(0.05, 0.2)
         else:
             # coe /coe/psp-selection form: PAYPAL / CREDIT CARD radios (no invoice)
             logger.warning("Invoice option not found — trying payment method radios (PAYPAL/CREDIT CARD)")
@@ -2048,7 +2053,7 @@ def _fill_step_promo(driver: webdriver.Chrome, student: Dict[str, str],
     logger.info("══ Wizard Step 4: Promotional Code ══")
     try:
         wait_for_document_ready(driver, timeout=30)
-        random_human_delay(0.5, 1.5)
+        random_human_delay(0.1, 0.3)
 
         promo_val = student.get("promo_code", "")
         if promo_val:
@@ -2056,7 +2061,7 @@ def _fill_step_promo(driver: webdriver.Chrome, student: Dict[str, str],
             apply_btn = find_element_fallback(driver, "apply_promo", timeout=5, logger=logger)
             if apply_btn and apply_btn.is_displayed():
                 human_move_and_click(driver, apply_btn)
-                random_human_delay(0.3, 0.8)
+                random_human_delay(0.05, 0.2)
 
         if not _click_continue_wizard(driver, logger):
             driver.save_screenshot("debug_step4_no_continue.png")
@@ -2073,10 +2078,10 @@ def _fill_step_review(driver: webdriver.Chrome, student: Dict[str, str],
     logger.info("══ Wizard Step 5: Review & Confirm ══")
     try:
         wait_for_document_ready(driver, timeout=30)
-        random_human_delay(0.5, 1.5)
+        random_human_delay(0.1, 0.3)
 
         random_scroll(driver)
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
 
         confirm_btn = find_element_fallback(driver, "confirm_order", timeout=10, logger=logger)
         if confirm_btn is None:
@@ -2273,9 +2278,9 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                             logger.info("No book/select visible — clicking DETAILS to reveal booking...")
                             try:
                                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", chosen_details)
-                                time.sleep(0.8)
+                                time.sleep(0.25)
                                 driver.execute_script("arguments[0].click();", chosen_details)
-                                time.sleep(1.5)
+                                time.sleep(0.4)
                                 buttons = find_book_buttons(driver)
                                 logger.info("After DETAILS click: %d bookable button(s).", len(buttons))
                             except Exception as exc:
@@ -2360,7 +2365,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
         if not _handle_cas_login_if_needed(driver, student, logger):
             logger.warning("CAS login failed — proceeding anyway")
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
 
         # Coe module-picker (/coe/options) opens after clicking the exam button.
         # Ensure at least one module selected, then Continue.
@@ -2370,7 +2375,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             driver.save_screenshot(f"debug_options_{name}.png")
             raise RuntimeError("Module selection (/coe/options) failed")
 
-        random_human_delay(0.4, 1.0)
+        random_human_delay(0.1, 0.3)
         if stop_event.is_set():
             logger.warning("Stop requested by user. Aborting.")
             result["status"] = "stopped"; return result
@@ -2387,7 +2392,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
         if not _handle_cas_login_if_needed(driver, student, logger):
             logger.warning("CAS login failed — proceeding anyway")
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
 
         if resume_step >= 2:
             logger.info("⏩ Skipping Wizard Step 1 (Name & Birth)")
@@ -2400,7 +2405,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             db.add_log(sk, level, "✅ Step 1 done — Name & Birth")
             db.save_checkpoint(student_key, 2)
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
         if stop_event.is_set():
             logger.warning("Stop requested by user. Aborting.")
             result["status"] = "stopped"; return result
@@ -2416,7 +2421,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             db.add_log(sk, level, "✅ Step 2 done — Address & Motivation")
             db.save_checkpoint(student_key, 3)
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
         if stop_event.is_set():
             logger.warning("Stop requested by user. Aborting.")
             result["status"] = "stopped"; return result
@@ -2432,7 +2437,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             db.add_log(sk, level, "✅ Step 3 done — Payment method selected")
             db.save_checkpoint(student_key, 4)
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
         if stop_event.is_set():
             logger.warning("Stop requested by user. Aborting.")
             result["status"] = "stopped"; return result
@@ -2448,7 +2453,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             db.add_log(sk, level, "✅ Step 4 done — Promo code")
             db.save_checkpoint(student_key, 5)
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
         if stop_event.is_set():
             logger.warning("Stop requested by user. Aborting.")
             result["status"] = "stopped"; return result
@@ -2464,7 +2469,7 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             db.add_log(sk, level, "✅ Step 5 done — Booking submitted!")
             db.save_checkpoint(student_key, 6)
 
-        random_human_delay(0.3, 0.8)
+        random_human_delay(0.05, 0.2)
         if stop_event.is_set():
             logger.warning("Stop requested by user. Aborting.")
             result["status"] = "stopped"; return result
