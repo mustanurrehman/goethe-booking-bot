@@ -1,5 +1,6 @@
 @echo off
-cd /d "C:\Users\brosp\AppData\Local\Temp\opencode\goethe-bot"
+title Goethe Booking Bot — Web Panel
+cd /d "%~dp0"
 echo Starting Goethe Booking Bot Web Panel...
 echo Open http://127.0.0.1:5000 in your browser
 python webapp.py
