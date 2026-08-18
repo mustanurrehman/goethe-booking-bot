@@ -1638,8 +1638,23 @@ def _click_continue_wizard(driver: webdriver.Chrome, logger: logging.Logger, tim
             logger.warning("No Continue button found")
             return False
         logger.info("Clicking Continue button in wizard")
-        human_move_and_click(driver, btn)
+        before_url = driver.current_url
+        # Wicket Ajax forms: ActionChains click sometimes only re-renders the
+        # same page. Use a native JS .click() which triggers Wicket's submit.
+        try:
+            driver.execute_script("arguments[0].click();", btn)
+        except Exception:
+            human_move_and_click(driver, btn)
         wait_for_document_ready(driver, timeout=timeout)
+        # If still on the same page, try the human click once more
+        try:
+            time.sleep(1.0)
+            if driver.current_url == before_url:
+                logger.info("Continue did not advance — retrying with human click")
+                human_move_and_click(driver, btn)
+                wait_for_document_ready(driver, timeout=timeout)
+        except Exception:
+            pass
         random_human_delay(0.05, 0.2)
         return True
     except Exception as exc:
@@ -1724,21 +1739,22 @@ def _handle_coe_options_modules(driver: webdriver.Chrome, student: Dict[str, str
                 if not matched:
                     logger.warning("Requested modules not found on page — keeping full exam")
             else:
-                # Full exam: make sure at least one is selected.
-                any_checked = any(c.is_selected() for c in cbs if _coe_gate_clickable_for(c))
-                if not any_checked:
-                    for c in cbs:
-                        try:
-                            if not c.is_enabled() or not c.is_displayed():
-                                continue
-                            parent = normalize_text(c.find_element(By.XPATH, "..").text)
-                            if "fully booked" in parent:
-                                continue
+                # Full exam / "all available": ensure EVERY enabled module
+                # checkbox is selected (disabled / fully-booked ones are
+                # skipped). This matches the user's rule: select all modules
+                # that are available.
+                for c in cbs:
+                    try:
+                        if not _coe_gate_clickable_for(c):
+                            continue  # disabled/fully-booked — skip
+                        if not c.is_selected():
                             human_move_and_click(driver, c)
                             random_human_delay(0.05, 0.15)
-                        except Exception:
-                            continue
-                logger.info("Modules already pre-selected (general exam)")
+                            logger.info("Module selected: %s",
+                                        normalize_text(c.find_element(By.XPATH, "..").text)[:50])
+                    except Exception:
+                        continue
+                logger.info("Modules: all available selected")
         else:
             logger.warning("No module checkboxes found on /coe/options — continuing anyway")
 
@@ -1990,9 +2006,25 @@ def _fill_step_personal_data_2(driver: webdriver.Chrome, student: Dict[str, str]
 
         _fill_select_by_visible(driver, ["country_dropdown"], student.get("country", "Pakistan"), logger)
         _fill_text_input(driver, ["postal_code"], student.get("postal_code", ""), logger)
-        _fill_text_input(driver, ["street_field"], student.get("street", ""), logger)
-        _fill_text_input(driver, ["house_number"], student.get("house_number", ""), logger)
-        _fill_text_input(driver, ["additional_address"], student.get("additional_address", ""), logger)
+
+        # street / house / additional — take dedicated columns, else split the
+        # combined 'address' string (e.g. "Al Hashim Colony Street 5 House Number 17").
+        street = student.get("street", "")
+        house_no = student.get("house_number", "")
+        addr_extra = student.get("additional_address", "")
+        addr_combined = student.get("address", "")
+        if not street and addr_combined:
+            street = addr_combined
+        # House number: if not separate, try to pull the trailing '... N' number
+        if not house_no:
+            import re as _re
+            m = _re.search(r'(\d+)\s*[A-Za-z]?$', street.strip())
+            if m:
+                house_no = m.group(1).lstrip("0")
+
+        _fill_text_input(driver, ["street_field"], street, logger)
+        _fill_text_input(driver, ["house_number"], house_no, logger)
+        _fill_text_input(driver, ["additional_address"], addr_extra, logger)
         _fill_text_input(driver, ["location_city"], student.get("city", ""), logger)
         _fill_select_by_visible(driver, ["phone_prefix"], student.get("phone_prefix", ""), logger)
 
@@ -2029,7 +2061,8 @@ def _fill_step_payment(driver: webdriver.Chrome, student: Dict[str, str],
             # coe /coe/psp-selection form: PAYPAL / CREDIT CARD radios (no invoice)
             logger.warning("Invoice option not found — trying payment method radios (PAYPAL/CREDIT CARD)")
             radios = driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
-            preferred = ["paypal", "credit card", "kreditkarte", "visa", "mastercard", "american express"]
+            # User pays by CARD, not PayPal. Prefer credit-card methods first.
+            preferred = ["credit card", "kreditkarte", "visa", "mastercard", "american express", "paypal"]
             clicked = False
 
             def _radio_label(r):
@@ -2041,10 +2074,31 @@ def _fill_step_payment(driver: webdriver.Chrome, student: Dict[str, str],
                 except Exception:
                     return ""
 
-            # Pass 1: visible+enabled radio matching a preferred payment name
+            # User pays by CREDIT CARD, never PayPal. Card methods first.
+            card_kw = ["credit card", "kreditkarte", "visa", "mastercard", "american express",
+                       "card", "card payment", "bank card"]
+            paypal_kw = ["paypal"]
+            clicked = False
+
+            def _radio_label(r):
+                try:
+                    return driver.execute_script(
+                        "var l=arguments[0].closest('label');"
+                        "return (l? l.textContent : arguments[0].parentElement.textContent)||''", r
+                    ) or ""
+                except Exception:
+                    return ""
+
+            def _is_card(label: str) -> bool:
+                return any(k in label for k in card_kw)
+
+            def _is_paypal(label: str) -> bool:
+                return any(k in label for k in paypal_kw)
+
+            # Pass 1: visible+enabled CARD radio (prefer named card methods)
             for r in radios:
                 label = _radio_label(r).lower()
-                if any(k in label for k in preferred):
+                if _is_card(label) and not _is_paypal(label):
                     try:
                         if r.is_displayed() and r.is_enabled():
                             human_move_and_click(driver, r)
@@ -2053,26 +2107,33 @@ def _fill_step_payment(driver: webdriver.Chrome, student: Dict[str, str],
                             break
                     except Exception:
                         continue
-            # Pass 2: no match — pick ANY visible+enabled radio
+            # Pass 2: no explicitly-named card — pick ANY visible+enabled radio
+            # that is NOT PayPal (card fallback), still refusing PayPal
             if not clicked:
                 for r in radios:
+                    label = _radio_label(r).lower()
+                    if _is_paypal(label):
+                        continue
                     try:
                         if r.is_displayed() and r.is_enabled():
                             human_move_and_click(driver, r)
                             clicked = True
-                            logger.info("Selected first available payment radio")
+                            logger.info("Selected card (fallback) radio: %s", " ".join(label.split())[:50])
                             break
                     except Exception:
                         continue
-            # Pass 3: radios hidden behind custom UI — force-click via JS
+            # Pass 3: radios hidden behind custom UI — force-click via JS,
+            # still refusing PayPal.
             if not clicked and radios:
                 for r in radios:
                     label = _radio_label(r).lower()
-                    if any(k in label for k in preferred) or not label:
+                    if _is_paypal(label):
+                        continue
+                    if _is_card(label) or not label:
                         try:
                             driver.execute_script("arguments[0].click();", r)
                             clicked = True
-                            logger.info("JS-clicked hidden payment radio: %s", " ".join(label.split())[:50])
+                            logger.info("JS-clicked hidden card radio: %s", " ".join(label.split())[:50])
                             break
                         except Exception:
                             continue
@@ -2120,6 +2181,14 @@ def _fill_step_review(driver: webdriver.Chrome, student: Dict[str, str],
     try:
         wait_for_document_ready(driver, timeout=30)
         random_human_delay(0.1, 0.3)
+
+        # SAFETY: if NO_FINAL_CONFIRM=1 (testing), stop at the review/summary
+        # page without clicking the real confirm button.
+        if os.environ.get("NO_FINAL_CONFIRM", "") in ("1", "true", "yes"):
+            logger.warning("SAFE-STOP: NO_FINAL_CONFIRM enabled — reviewing summary, NOT booking")
+            driver.save_screenshot("debug_review_safestop.png")
+            logger.info("★ Step 5 (SAFE STOP at review) done")
+            return True
 
         random_scroll(driver)
         random_human_delay(0.05, 0.2)
@@ -2454,6 +2523,12 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
         if resume_step >= 3:
             logger.info("⏩ Skipping Wizard Step 2 (Address & Motivation)")
         else:
+            # WICKET QUIRK: Step 1 (Name & Birth) and Step 2 (Address) live on
+            # the SAME /coe/oska-acc URL — the address form re-renders in place
+            # after Step 1's Continue. So Step 2 must always run, and it must
+            # first ensure the address form is actually present (Step 1's post-
+            # submit re-render populates it). _fill_step_personal_data_2 fills
+            # by form-field detection, so calling it right after Step 1 is safe.
             db.add_log(sk, level, " Wizard Step 2: Address & Motivation")
             if not _fill_step_personal_data_2(driver, student, logger):
                 db.add_log(sk, level, "❌ Step 2 (Address & Motivation) failed")
