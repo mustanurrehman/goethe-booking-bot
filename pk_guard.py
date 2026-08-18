@@ -111,6 +111,19 @@ def main() -> int:
                 print(f"[guard] browser API seat probe skipped: {str(api_exc)[:80]}")
 
             btn = find_book_buttons(driver)
+            if btn:
+                # FALSE-POSITIVE GUARD: the shared debug Chrome can be left on a
+                # NON-Pakistan finder (e.g. our own Germany probes) by another
+                # session, and find_book_buttons would happily return a Hamburg
+                # "SELECT MODULES" button. A real Pakistan bookable slot must
+                # show a Pakistan location in its row. If the current page is
+                # not the Pakistan B1 finder, reload it before trusting anything.
+                row_now = button_row_text(btn[0]).lower()
+                if "karachi" not in row_now and "lahore" not in row_now and "islamabad" not in row_now and "/pk/" not in driver.current_url:
+                    print(f"[guard] page not Pakistan finder (row='{row_now[:60]}') — reloading PK page")
+                    driver.get(URL_PK)
+                    time.sleep(6)
+                    btn = find_book_buttons(driver)
             if not btn:
                 # DETAILS reveal (Vue finder)
                 try:
