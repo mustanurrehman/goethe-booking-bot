@@ -65,6 +65,7 @@ from selenium.webdriver import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -476,16 +477,12 @@ def create_driver(use_headless: bool, logger: logging.Logger, proxy: Optional[st
                 opts = webdriver.ChromeOptions()
                 opts.add_experimental_option("debuggerAddress", f"127.0.0.1:{debug_port}")
                 # Attach needs a chromedriver binary too; reuse the cached one.
-                import glob as _glob
-                cached = sorted(_glob.glob(str(Path.home() / ".wdm" / "drivers" / "chromedriver" / "**" / "chromedriver.exe"), recursive=True))
-                if not cached:
-                    _v = _detect_chrome_version()
-                    cached = sorted(_glob.glob(str(Path.home() / ".wdm" / "drivers" / "chromedriver" / "win64" / f"{_v}" / "chromedriver-win64/chromedriver.exe"), recursive=True))
-                driver_path = cached[-1] if cached else None
+                driver_path = _find_local_driver(_detect_chrome_version())
                 if not driver_path:
                     raise RuntimeError("no cached chromedriver found for attach")
                 svc = Service(driver_path)
-                svc.creation_flags = 0
+                if os.name == "nt":
+                    svc.creation_flags = 0
                 driver = webdriver.Chrome(service=svc, options=opts)
                 logger.info("Attached to real Chrome session (best stealth — uses your real logged-in cookies)")
                 return driver
@@ -572,7 +569,7 @@ def create_driver(use_headless: bool, logger: logging.Logger, proxy: Optional[st
 
 def is_blocked_response(driver: webdriver.Chrome) -> bool:
     title = (driver.title or "").lower()
-    if any(t in title for t in ["429", "503", "too many requests", "access denied", "attention required"]):
+    if any(t in title for t in ["429", "503", "too many requests", "access denied", "attention required", "forbidden", "403"]):
         return True
     try:
         body = driver.find_element(By.TAG_NAME, "body").text.lower()
@@ -640,6 +637,19 @@ def button_row_text(button: WebElement) -> str:
         return normalize_text(button.text)
 
 
+def _card_row_text(details_btn: WebElement) -> str:
+    """Return the text of the exam card a DETAILS button belongs to."""
+    try:
+        card = details_btn.find_element(By.XPATH,
+            ".//ancestor::*[contains(@class,'card') or contains(@class,'finder-list')]")
+        return normalize_text(card.text)
+    except Exception:
+        try:
+            return normalize_text(details_btn.text)
+        except Exception:
+            return ""
+
+
 def pick_preferred_button(buttons: Sequence[WebElement], preferred_city: str) -> Optional[WebElement]:
     if not buttons:
         return None
@@ -699,7 +709,7 @@ def human_pause_between_fields():
 
 def simulate_human_typing(element: WebElement, text: str) -> None:
     """Type text with realistic human-like bursts and pauses."""
-    element.clear()
+    _force_clear(element)
     element.click()
     for ch in text:
         element.send_keys(ch)
@@ -1185,10 +1195,39 @@ def wait_and_find(driver: webdriver.Chrome, css_selector: str, timeout: int = 15
 
 
 def type_slowly(element: WebElement, text: str) -> None:
-    element.clear()
+    _force_clear(element)
     for ch in text:
         element.send_keys(ch)
         time.sleep(random.uniform(0.01, 0.05))
+
+
+def _force_clear(element: WebElement) -> None:
+    """Reliably empty an input before typing.
+
+    Uses the native browser pipeline (focus → Ctrl+A → Delete) so React /
+    autofill controlled inputs update their internal state the same way a real
+    user would. Avoids Selenium's .clear() (which React often ignores) and
+    avoids dispatching synthetic 'change' events (which can reset the whole
+    wizard form on some pages).
+    """
+    try:
+        element.click()
+    except Exception:
+        pass
+    for _ in range(2):
+        try:
+            element.send_keys(Keys.CONTROL, "a")
+        except Exception:
+            pass
+        try:
+            element.send_keys(Keys.DELETE)
+        except Exception:
+            pass
+    try:
+        element.send_keys(Keys.CONTROL, "a")
+        element.send_keys(Keys.BACKSPACE)
+    except Exception:
+        pass
 
 
 def click_continue_button(driver: webdriver.Chrome, logger: logging.Logger, timeout: int = 90) -> None:
@@ -1277,6 +1316,14 @@ def _login_attempt(driver: webdriver.Chrome, email: str, password: str, logger: 
 
         email_input = find_element_fallback(driver, "login_email", timeout=15, logger=logger)
         if email_input is None:
+            # SSO fast-path: an already-logged-in real-Chrome profile auto-completes
+            # the CAS redirect and lands on my.goethe.de (or back on the coe
+            # service) without ever showing a login form. That is a successful
+            # auth — we don't need to type anything.
+            url_t = driver.current_url.lower()
+            if ("my.goethe.de" in url_t) or ("coe" in url_t and "login" not in url_t):
+                logger.info("SSO already authenticated (no login form shown) — proceeding")
+                return True
             _last_login_error = "Email field not found on login page"
             logger.warning(_last_login_error)
             logger.info("Page URL: %s", driver.current_url)
@@ -1586,6 +1633,121 @@ def _click_continue_wizard(driver: webdriver.Chrome, logger: logging.Logger, tim
         return False
 
 
+def _coe_gate_clickable(btn: WebElement) -> bool:
+    try:
+        if not btn.is_displayed():
+            return False
+        if not btn.is_enabled():
+            return False
+        cls = normalize_text(btn.get_attribute("class") or "")
+        if "disabled" in cls or "nicht-buchbar" in cls:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _handle_coe_options_modules(driver: webdriver.Chrome, student: Dict[str, str],
+                                logger: logging.Logger) -> bool:
+    """Handle /coe/options — the module-picker page that opens after clicking
+    'Select modules' / 'Book' on the exam finder.
+
+    For a full exam all module checkboxes come pre-checked. We make sure at
+    least one module is selected (skipping any that are disabled / fully
+    booked), then click CONTINUE.
+    """
+    url = (driver.current_url or "").lower()
+    body_hint = ""
+    try:
+        body_hint = normalize_text(driver.find_element(By.TAG_NAME, "body").text) or ""
+    except Exception:
+        pass
+    is_options = ("coe/options" in url) or ("available modules" in body_hint) or ("general exam" in body_hint)
+    if not is_options:
+        return True  # not on this step — nothing to do
+
+    logger.info("Coe module-picker (/coe/options) detected")
+    try:
+        wait_for_document_ready(driver, timeout=25)
+        random_human_delay(0.4, 1.0)
+
+        # Module checkboxes. Pre-checked ones are fine. If none selected,
+        # tick the enabled ones (skip rows that say 'Fully booked').
+        cbs = driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+        selected_hint = ""
+        if cbs:
+            any_checked = any(c.is_selected() for c in cbs if _coe_gate_clickable_for(c))
+            if not any_checked:
+                for c in cbs:
+                    try:
+                        if not c.is_enabled() or not c.is_displayed():
+                            continue
+                        parent = normalize_text(c.find_element(By.XPATH, "..").text)
+                        if "fully booked" in parent:
+                            continue
+                        human_move_and_click(driver, c)
+                        random_human_delay(0.2, 0.5)
+                        selected_hint = parent[:40]
+                    except Exception:
+                        continue
+                logger.info("Selected module(s): %s", selected_hint or "?")
+            else:
+                logger.info("Modules already pre-selected (general exam)")
+        else:
+            logger.warning("No module checkboxes found on /coe/options — continuing anyway")
+
+        if not _click_continue_wizard(driver, logger):
+            logger.warning("CONTINUE on /coe/options not found")
+            return False
+        return True
+    except Exception as exc:
+        logger.exception("_handle_coe_options_modules error: %s", exc)
+        return False
+
+
+def _coe_gate_clickable_for(c: WebElement) -> bool:
+    try:
+        return c.is_enabled() and c.is_displayed()
+    except Exception:
+        return False
+
+
+def _handle_coe_selection_gate(driver: webdriver.Chrome, student: Dict[str, str],
+                               logger: logging.Logger) -> bool:
+    """Handle /coe/selection — the age-guardian gate:
+    'BOOK FOR MY CHILD' / 'BOOK FOR MYSELF'.
+
+    We ALWAYS click 'Book for myself'. The user explicitly owns the account and
+    books for themselves; the 'child/guardian' path is never used.
+    """
+    url = (driver.current_url or "").lower()
+    body_hint = ""
+    try:
+        body_hint = normalize_text(driver.find_element(By.TAG_NAME, "body").text) or ""
+    except Exception:
+        pass
+    is_gate = ("coe/selection" in url) or ("book for myself" in body_hint) or ("book for my child" in body_hint)
+    if not is_gate:
+        return True
+
+    logger.info("Coe selection gate detected — clicking 'Book for myself'")
+    try:
+        myself = find_element_fallback(driver, "book_for_myself", timeout=6, logger=logger)
+        if myself is not None and _coe_gate_clickable(myself):
+            logger.info("Clicking 'Book for myself'")
+            human_move_and_click(driver, myself)
+        else:
+            # If only the child option is present (unusual), still avoid it:
+            logger.warning("No clickable 'Book for myself' gate button — skipping gate")
+            return False
+        wait_for_document_ready(driver, timeout=25)
+        random_human_delay(0.4, 1.0)
+        return True
+    except Exception as exc:
+        logger.exception("_handle_coe_selection_gate error: %s", exc)
+        return False
+
+
 def _fill_text_input(driver: webdriver.Chrome, selectors: List[str], value: str,
                      logger: logging.Logger, timeout: int = 5) -> bool:
     if not value:
@@ -1601,6 +1763,86 @@ def _fill_text_input(driver: webdriver.Chrome, selectors: List[str], value: str,
     return False
 
 
+def _select_option_label_parts(value: str) -> List[str]:
+    """Return candidate label(s) for a select option value.
+
+    Handles the coe wizard's DOB selects, which show weekday-/month-NAME text
+    in the dropdown but accept the numeric value ('08' -> 'August').
+    """
+    v = (value or "").strip()
+    out = [v]
+    try:
+        n = int(v)
+        if 1 <= n <= 12:
+            MONTHS = ["", "January", "February", "March", "April", "May", "June",
+                      "July", "August", "September", "October", "November", "December"]
+            out.append(MONTHS[n])
+            out.append(f"{n:02d}")
+    except ValueError:
+        pass
+    return [x for x in dict.fromkeys(out) if x]
+
+
+def _select_by_key_visible(driver: webdriver.Chrome, key: str, value: str,
+                           logger: logging.Logger, timeout: int = 10) -> bool:
+    """Fill a (possibly hidden) custom <select> by key name.
+
+    Iterates every selector registered for `key`, including hidden ones the
+    coe wizard puts behind its custom dropdowns, and selects the first option
+    whose visible label matches a candidate for `value`.
+    """
+    if not value:
+        return False
+    from selector_fallbacks import ELEMENT_SELECTORS
+    selectors = ELEMENT_SELECTORS.get(key)
+    if not selectors:
+        return False
+    for by, sel in selectors:
+        try:
+            els = driver.find_elements(by, sel)
+        except Exception:
+            continue
+        if not els:
+            continue
+        el = els[0]
+        if el.tag_name.lower() != "select":
+            continue
+        if el.is_displayed():
+            try:
+                Select(el).select_by_visible_text(value)
+                return True
+            except Exception:
+                pass
+        # Hidden / custom select → JS set with label candidates.
+        match = None
+        for cand in _select_option_label_parts(value):
+            try:
+                el.find_element(By.XPATH, f".//option[normalize-space(.) = '{cand}']")
+                match = cand
+                break
+            except NoSuchElementException:
+                continue
+        if match is None:
+            logger.warning("Option '%s' not found in select '%s'", value, key)
+            continue
+        driver.execute_script(
+            "var s=arguments[0],v=arguments[1];"
+            "var i=0;"
+            "for(;i<s.options.length;i++){"
+            "  var t=s.options[i].textContent.replace(/\\s+/g,' ').trim();"
+            "  if(t===v||t.indexOf(v)===0){break;}"
+            "}"
+            "if(i<s.options.length){s.selectedIndex=i;"
+            "  s.dispatchEvent(new Event('change',{bubbles:true}));"
+            "  s.dispatchEvent(new Event('input',{bubbles:true}));}"
+            "return s.options[s.selectedIndex]?s.options[s.selectedIndex].text:'';",
+            el, match,
+        )
+        random_human_delay(0.2, 0.5)
+        return True
+    return False
+
+
 def _fill_select_by_visible(driver: webdriver.Chrome, selectors: List[str], value: str,
                              logger: logging.Logger, timeout: int = 5) -> bool:
     if not value:
@@ -1608,8 +1850,48 @@ def _fill_select_by_visible(driver: webdriver.Chrome, selectors: List[str], valu
     for sel in selectors:
         try:
             el = find_element_fallback(driver, sel, timeout=timeout, logger=logger)
-            if el and el.is_displayed() and el.tag_name.lower() == "select":
-                Select(el).select_by_visible_text(value)
+            if el is None:
+                # find_element_fallback drops hidden elements; the coe wizard
+                # hides its <select> behind a custom dropdown, so fall back to
+                # a direct (visibility-agnostic) lookup via the key registry.
+                if _select_by_key_visible(driver, sel, value, logger, timeout=timeout):
+                    return True
+                continue
+            if el and el.tag_name.lower() == "select":
+                if el.is_displayed():
+                    # Standard visible <select>
+                    Select(el).select_by_visible_text(value)
+                    return True
+                # Hidden <select> behind a custom dropdown (Goethe coe wizard):
+                # set the option via JS + fire change so the widget syncs.
+                # Try each candidate label ('08' -> '08', 'August') until one
+                # matches an option.
+                set_ok = False
+                for cand in _select_option_label_parts(value):
+                    try:
+                        el.find_element(By.XPATH, f".//option[normalize-space(.) = '{cand}']")
+                        match = cand
+                        set_ok = True
+                        break
+                    except NoSuchElementException:
+                        continue
+                if not set_ok:
+                    logger.warning("Option '%s' not found in select (%s)", value, sel)
+                    continue
+                driver.execute_script(
+                    "var s=arguments[0],v=arguments[1];"
+                    "var i=0;"
+                    "for(;i<s.options.length;i++){"
+                    "  var t=s.options[i].textContent.replace(/\\s+/g,' ').trim();"
+                    "  if(t===v||t.indexOf(v)===0){break;}"
+                    "}"
+                    "if(i<s.options.length){s.selectedIndex=i;"
+                    "  s.dispatchEvent(new Event('change',{bubbles:true}));"
+                    "  s.dispatchEvent(new Event('input',{bubbles:true}));}"
+                    "return s.options[s.selectedIndex]?s.options[s.selectedIndex].text:'';",
+                    el, match,
+                )
+                random_human_delay(0.2, 0.5)
                 return True
         except (NoSuchElementException, TimeoutException):
             continue
@@ -1692,21 +1974,64 @@ def _fill_step_payment(driver: webdriver.Chrome, student: Dict[str, str],
         wait_for_document_ready(driver, timeout=30)
         random_human_delay(0.5, 1.5)
 
-        invoice_el = find_element_fallback(driver, "invoice_option", timeout=10, logger=logger)
+        invoice_el = find_element_fallback(driver, "invoice_option", timeout=6, logger=logger)
         if invoice_el and invoice_el.is_displayed():
             logger.info("Selecting Invoice payment option")
             human_move_and_click(driver, invoice_el)
             random_human_delay(0.3, 0.8)
         else:
-            logger.warning("Invoice option not found — trying generic radio/option")
+            # coe /coe/psp-selection form: PAYPAL / CREDIT CARD radios (no invoice)
+            logger.warning("Invoice option not found — trying payment method radios (PAYPAL/CREDIT CARD)")
             radios = driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
+            preferred = ["paypal", "credit card", "kreditkarte", "visa", "mastercard", "american express"]
+            clicked = False
+
+            def _radio_label(r):
+                try:
+                    return driver.execute_script(
+                        "var l=arguments[0].closest('label');"
+                        "return (l? l.textContent : arguments[0].parentElement.textContent)||''", r
+                    ) or ""
+                except Exception:
+                    return ""
+
+            # Pass 1: visible+enabled radio matching a preferred payment name
             for r in radios:
-                parent = driver.execute_script("return arguments[0].parentElement.textContent", r)
-                if parent and "invoice" in parent.lower():
-                    if r.is_displayed() and r.is_enabled():
-                        human_move_and_click(driver, r)
-                        random_human_delay(0.3, 0.8)
-                        break
+                label = _radio_label(r).lower()
+                if any(k in label for k in preferred):
+                    try:
+                        if r.is_displayed() and r.is_enabled():
+                            human_move_and_click(driver, r)
+                            clicked = True
+                            logger.info("Selected payment: %s", " ".join(label.split())[:50])
+                            break
+                    except Exception:
+                        continue
+            # Pass 2: no match — pick ANY visible+enabled radio
+            if not clicked:
+                for r in radios:
+                    try:
+                        if r.is_displayed() and r.is_enabled():
+                            human_move_and_click(driver, r)
+                            clicked = True
+                            logger.info("Selected first available payment radio")
+                            break
+                    except Exception:
+                        continue
+            # Pass 3: radios hidden behind custom UI — force-click via JS
+            if not clicked and radios:
+                for r in radios:
+                    label = _radio_label(r).lower()
+                    if any(k in label for k in preferred) or not label:
+                        try:
+                            driver.execute_script("arguments[0].click();", r)
+                            clicked = True
+                            logger.info("JS-clicked hidden payment radio: %s", " ".join(label.split())[:50])
+                            break
+                        except Exception:
+                            continue
+            if not clicked:
+                logger.warning("No payment radio found/clicked — relying on form default")
 
         if not _click_continue_wizard(driver, logger):
             driver.save_screenshot("debug_step3_no_continue.png")
@@ -1926,6 +2251,36 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                 buttons = find_book_buttons(driver)
                 logger.info("Found %d clickable button(s).", len(buttons))
 
+                # ── DETAILS-first: on the new Vue finder, each exam row has a
+                # "DETAILS" button; clicking it reveals "Select modules" / booking.
+                # If no book/select button is directly visible, click DETAILS on
+                # the preferred city's card, then re-scan for the booking button.
+                if not buttons:
+                    details = driver.find_elements(By.XPATH,
+                        "//*[self::a or self::button][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'details')]")
+                    if details:
+                        chosen_details = None
+                        pref_city = normalize_text(city)
+                        if pref_city:
+                            for d in details:
+                                row = _card_row_text(d)
+                                if pref_city in row:
+                                    chosen_details = d
+                                    break
+                        if chosen_details is None and details:
+                            chosen_details = details[0]
+                        if chosen_details:
+                            logger.info("No book/select visible — clicking DETAILS to reveal booking...")
+                            try:
+                                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", chosen_details)
+                                time.sleep(0.8)
+                                driver.execute_script("arguments[0].click();", chosen_details)
+                                time.sleep(1.5)
+                                buttons = find_book_buttons(driver)
+                                logger.info("After DETAILS click: %d bookable button(s).", len(buttons))
+                            except Exception as exc:
+                                logger.warning("DETAILS click failed: %s", exc)
+
                 target_button = pick_preferred_button(buttons, city)
 
                 if target_button is None:
@@ -2001,6 +2356,33 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                     logger.info("Wicket page cleared")
                     db.add_log(sk, level, "✅ Wicket page cleared")
                     break
+
+        if not _handle_cas_login_if_needed(driver, student, logger):
+            logger.warning("CAS login failed — proceeding anyway")
+
+        random_human_delay(0.3, 0.8)
+
+        # Coe module-picker (/coe/options) opens after clicking the exam button.
+        # Ensure at least one module selected, then Continue.
+        coe_options_ok = _handle_coe_options_modules(driver, student, logger)
+        if not coe_options_ok:
+            db.add_log(sk, level, "❌ /coe/options module selection failed")
+            driver.save_screenshot(f"debug_options_{name}.png")
+            raise RuntimeError("Module selection (/coe/options) failed")
+
+        random_human_delay(0.4, 1.0)
+        if stop_event.is_set():
+            logger.warning("Stop requested by user. Aborting.")
+            result["status"] = "stopped"; return result
+        db.save_checkpoint(student_key, 12)  # coe/options survived
+
+        # Coe selection gate (/coe/selection) — adult vs guardian (child) choice.
+        coe_selection_ok = _handle_coe_selection_gate(driver, student, logger)
+        if not coe_selection_ok:
+            db.add_log(sk, level, "❌ /coe/selection gate failed")
+            driver.save_screenshot(f"debug_selection_{name}.png")
+            raise RuntimeError("Selection gate (/coe/selection) failed")
+        db.save_checkpoint(student_key, 13)  # selection gate cleared
 
         if not _handle_cas_login_if_needed(driver, student, logger):
             logger.warning("CAS login failed — proceeding anyway")

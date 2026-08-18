@@ -56,19 +56,19 @@ ELEMENT_SELECTORS: Dict[str, List[Tuple[str, str]]] = {
         (By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'surname')]/following::input[1]"),
     ],
     "dob_day": [
-        (By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'date of birth')]/following::select[1]"),
         (By.CSS_SELECTOR, "select[name*='day']"),
         (By.CSS_SELECTOR, "select[name*='tag']"),
+        (By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'date of birth')]/following::select[1]"),
     ],
     "dob_month": [
-        (By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'date of birth')]/following::select[2]"),
         (By.CSS_SELECTOR, "select[name*='month']"),
         (By.CSS_SELECTOR, "select[name*='monat']"),
+        (By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'date of birth')]/following::select[2]"),
     ],
     "dob_year": [
-        (By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'date of birth')]/following::select[3]"),
         (By.CSS_SELECTOR, "select[name*='year']"),
         (By.CSS_SELECTOR, "select[name*='jahr']"),
+        (By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'date of birth')]/following::select[3]"),
     ],
     "email_field": [
         (By.CSS_SELECTOR, "input[type='email']"),
@@ -229,6 +229,19 @@ ELEMENT_SELECTORS: Dict[str, List[Tuple[str, str]]] = {
         (By.XPATH, "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'book') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'myself')]"),
         (By.XPATH, "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'book') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'myself')]"),
         (By.XPATH, "//*[self::a or self::button][contains(@href, 'book') and contains(@href, 'myself')]"),
+    ],
+    "book_for_child": [
+        (By.XPATH, "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'book') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'child')]"),
+        (By.XPATH, "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'book') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'child')]"),
+        (By.XPATH, "//*[self::a or self::button][contains(@href, 'book') and contains(@href, 'child')]"),
+    ],
+    "coe_options_checkbox": [
+        (By.CSS_SELECTOR, "input[type='checkbox']"),
+        (By.XPATH, "//input[@type='checkbox']"),
+    ],
+    "coe_selection_gate": [
+        (By.XPATH, "//*[self::a or self::button][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'book for myself')]"),
+        (By.XPATH, "//*[self::a or self::button][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'book for my child')]"),
     ],
 }
 
