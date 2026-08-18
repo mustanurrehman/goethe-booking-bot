@@ -1087,7 +1087,8 @@ def check_slot_via_api(level: str, logger: logging.Logger) -> Dict:
             return result
 
         data = resp.json()
-        exams = data.get("exams") or data.get("data") or data.get("results") or (data if isinstance(data, list) else [data])
+        exams = (data.get("exams") or data.get("DATA") or data.get("data")
+                 or data.get("results") or (data if isinstance(data, list) else [data]))
         if not isinstance(exams, list):
             exams = [exams]
 
@@ -1105,7 +1106,8 @@ def check_slot_via_api(level: str, logger: logging.Logger) -> Dict:
         # (config.csv / dashboard can act on it before racing the DOM).
         _SEAT_KEYS = ("capacity", "maxParticipants", "maxSeats", "freeCap", "capacityLeft",
                       "bookableSeats", "freeSeats", "remainingSeats", "openSlots", "placesLeft",
-                      "quota", "roomCapacity", "maxpeople", "free", "seatsLeft", "availableSeats")
+                      "quota", "roomCapacity", "maxpeople", "free", "seatsLeft", "availableSeats",
+                      "capacityMax", "capacityOptimal")
         def _seat_field(ex: Dict) -> Optional[int]:
             for k in _SEAT_KEYS:
                 for ck in (k, k.lower(), k.upper()):

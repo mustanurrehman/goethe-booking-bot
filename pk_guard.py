@@ -58,22 +58,57 @@ def main() -> int:
             body = driver.find_element(By.TAG_NAME, "body").text
             low = norm(body)
 
-            # Backend seat probe (best-effort): the /rest API may carry per-exam
-            # capacity fields. If it answers, surface the count. Never blocks the
-            # watch when the API is blocked or silent (it frequently 403s).
+            # Backend seat probe (best-effort): the /rest API carries capacityMax /
+            # capacityOptimal per exam (0 while not yet bookable). curl_cffi gets
+            # 403 on this IP, but fetch() from the page's own origin works (it
+            # reuses the browser session/Akamai cookie). We evaluate it in-page.
             api_extra = {}
             try:
-                api = check_slot_via_api("B1", _API_LOGGER)
-                if api.get("api_ok"):
-                    api_extra = {
-                        "api_seats_total": api.get("total_seats_shown"),
-                        "api_seats_row_min": api.get("min_seat_count"),
-                        "api_seats_row_max": api.get("max_seat_count"),
-                        "api_seats_rows": api.get("seats")[:6] if api.get("seats") else [],
+                seat_js = r"""
+                var out = {};
+                (async function(){
+                  try {
+                    var u='https://www.goethe.de/rest/examfinder/exams/institute/O%2010000366?category=E006&type=ER&countryIsoCode=pk&locationName=&count=10&start=1&langId=1&timezone=47&isODP=0&sortField=startDate&sortOrder=ASC&dataMode=0&langIsoCodes=en';
+                    var r = await fetch(u,{credentials:'include'});
+                    var j = await r.json();
+                    var arr = j.DATA || j.data || [];
+                    var rows=[];
+                    for (var i=0;i<arr.length;i++){
+                      var e=arr[i]; if(!e) continue;
+                      rows.push({loc:e.locationName||'?', start:e.startDate||'', end:e.endDate||'',
+                                 bookFrom:e.bookFrom||'', capacityMax:e.capacityMax, capacityOptimal:e.capacityOptimal,
+                                 availability:e.availability, price:e.price});
                     }
-                    print(f"[guard] API: seats_row={api_extra['api_seats_row_min']}/{api_extra['api_seats_row_max']} total={api_extra['api_seats_total']}")
+                    out.n=arr.length; out.rows=rows;
+                  } catch(e){ out.err=String(e); }
+                  window.__guard_seats=out;
+                })()
+                """
+                driver.execute_script(seat_js)
+                time.sleep(2.5)
+                sj = driver.execute_script("return window.__guard_seats")
+                if sj and sj.get("rows") is not None:
+                    rows = sj.get("rows", [])
+                    cap_min = None; cap_max = None
+                    for rw in rows:
+                        try:
+                            c = rw.get("capacityMax")
+                            if isinstance(c, (int, float)) and c > 0:
+                                if cap_min is None or c < cap_min: cap_min = c
+                                if cap_max is None or c > cap_max: cap_max = c
+                        except Exception:
+                            pass
+                    api_extra = {
+                        "browser_api_exams": sj.get("n", 0),
+                        "browser_api_bookFrom": rows[0].get("bookFrom") if rows else None,
+                        "api_seats_row_max": cap_max,
+                        "api_seats_row_min": cap_min,
+                        "browser_api_rows": rows[:4],
+                    }
+                    print(f"[guard] browser API: exams={api_extra['browser_api_exams']} "
+                          f"bookFrom={api_extra['browser_api_bookFrom']} capMax={cap_max}")
             except Exception as api_exc:
-                print(f"[guard] API seat probe skipped: {str(api_exc)[:80]}")
+                print(f"[guard] browser API seat probe skipped: {str(api_exc)[:80]}")
 
             btn = find_book_buttons(driver)
             if not btn:
