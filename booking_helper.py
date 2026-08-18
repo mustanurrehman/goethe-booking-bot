@@ -115,6 +115,18 @@ BURST_POST_POLL_MIN = 1.0
 BURST_POST_POLL_MAX = 2.0
 BURST_CRASH_RETRY = 1.0
 
+# ── High-demand ("slot scooped") race recovery ─────────────────────────────
+# When Goethe returns "high demand / the product you have chosen cannot be
+# booked at the moment, please try again", it means someone else grabbed the
+# slot milliseconds before our click. Manual users give up here — this bot does
+# NOT. Other sessions' carts time out within ~10-15 min, freeing windows the
+# bot catches on the next pass. These bounds control how many full restarts a
+# scoop may trigger before we stop (and the finder poll itself never stops).
+RACE_ATTEMPTS = int(os.environ.get("RACE_ATTEMPTS", "60"))
+RACE_GAP_SECONDS = float(os.environ.get("RACE_GAP_SECONDS", "1.5"))
+_RACE_COUNTS: Dict[str, int] = {}           # per-student scoop counter
+_RACE_LOCK = threading.Lock()               # guards the counter across recursion
+
 # Configurable polling jitter (env overrides)
 _BASE_POLL = float(os.environ.get("POLL_INTERVAL", "10"))
 _JITTER_MAX = float(os.environ.get("POLL_JITTER", "5"))
@@ -588,6 +600,118 @@ def is_blocked_response(driver: webdriver.Chrome) -> bool:
     return any(p in body for p in strong)
 
 
+_SCOOP_PHRASES = [
+    "high demand",
+    "cannot be booked at the moment",
+    "cannot be booked",
+    "no longer available",
+    "please try again",
+    "not be booked at the moment",
+    "sold out",
+    "alle weg",
+    "ausverkauft",
+    "keine verfügbaren",
+    "nicht mehr buchbar",
+]
+
+
+def _is_scoop(driver: webdriver.Chrome, minimal: bool = False) -> bool:
+    """True when the current page is Goethe's 'high demand / cannot be booked at
+    the moment, please try again' interception — the signal that another session
+    grabbed the slot milliseconds before ours."""
+    try:
+        body = driver.find_element(By.TAG_NAME, "body").text.lower()
+    except Exception:
+        return False
+    if "high demand" in body:
+        return True
+    if "cannot be booked" in body and ("moment" in body or "try again" in body):
+        return True
+    if minimal:
+        return "sold out" in body or "ausverkauft" in body or "nicht mehr buchbar" in body
+    return any(p in body for p in _SCOOP_PHRASES)
+
+
+class SlotScoopedError(Exception):
+    """Raised when Goethe interjects 'high demand / cannot be booked at the
+    moment, please try again' — someone else grabbed the slot first. The outer
+    run_student_flow catches this and re-enters the race instead of failing."""
+
+
+def _raise_if_scooped(driver: webdriver.Chrome, logger: logging.Logger, where: str = "") -> None:
+    """Check the current page for the high-demand interjection and raise
+    SlotScoopedError so the flow re-races instead of surrendering."""
+    if _is_scoop(driver):
+        logger.warning("SCOOP interjection detected%s — raising for re-race", f" ({where})" if where else "")
+        raise SlotScoopedError("slot scooped")
+
+
+def _scoop_step_guard(driver: webdriver.Chrome, student: Dict[str, str], logger: logging.Logger,
+                      stop_event: threading.Event, use_headless: bool, where: str) -> Optional[Dict[str, str]]:
+    """Call right after each wizard step/continue. If Goethe interjected the
+    high-demand page for this slot, re-race immediately (returning the result);
+    otherwise return None and the flow continues to the next step."""
+    try:
+        _raise_if_scooped(driver, logger, where=where)
+    except SlotScoopedError:
+        return _scoop_retry_race(driver, student, logger, stop_event, use_headless)
+    return None
+
+
+def _scoop_retry_race(driver: webdriver.Chrome, student: Dict[str, str], logger: logging.Logger,
+                      stop_event: threading.Event, use_headless: bool = False) -> Dict[str, str]:
+    """A slot got scooped (someone beat us by a few ms). Instead of surrendering,
+    re-enter the finder and keep racing the freed slot windows. This routine is
+    invoked from inside the wizard and RESTARTS the whole flow; run_student_flow's
+    outer loop is bypassed by design (that loop only handles pre-first-click
+    waiting). Returns True if we ended up booked. Bounded by RACE_ATTEMPTS so a
+    genuinely dead race can't spin forever."""
+    key = student.get("name", "s") + "|" + student.get("level", "L") + "|" + student.get("city", "C")
+    with _RACE_LOCK:
+        _RACE_COUNTS[key] = _RACE_COUNTS.get(key, 0) + 1
+        current = _RACE_COUNTS[key]
+    if current > RACE_ATTEMPTS:
+        logger.error("❌ Slot remained scooped after %d re-races. Stopping (race dead).", current - 1)
+        notify(f"⚔️ Race exhausted: {student.get('name')}",
+               "Slot kept being scooped by others. Try again later.", logger)
+        return {"name": student.get("name", "Unknown"), "level": student.get("level", "?"),
+                "city": student.get("city", "?"), "status": "failed",
+                "error": "slot scooped too many times (race exhausted)"}
+
+    logger.warning("⚔️ Slot SCOOPED (someone beat us). Re-race #%d — %s",
+                   current, RACE_GAP_SECONDS and f"back off {RACE_GAP_SECONDS}s")
+    db.add_log(key, student.get("level", "?"),
+               f"⚔️ High-demand scoop #{current} — re-entering race")
+    try:
+        driver.save_screenshot(f"debug_scoop_race{current}.png")
+    except Exception:
+        pass
+    # DO NOT driver.quit() here: in attach mode (USE_REAL_CHROME/9222) quit()
+    # closes the controlled window, and if it is the last one the browser exits
+    # and the re-attach below fails. The caller frame's `finally` owns cleanup;
+    # this recursion creates its own driver via create_driver() and quits it in
+    # ITS finally, so the shared browser is never torn down out from under us.
+
+    time.sleep(RACE_GAP_SECONDS)
+    if stop_event.is_set():
+        logger.warning("Stop requested during re-race. Aborting.")
+        return False
+
+    logger.info("⚔️ Re-race #%d: restarting full flow → finder → book → wizard", current)
+
+    # Direct recursive restart. Correctness > elegance here: the only parent
+    # frame that can be mid-recursion is the wizard handlers, and every single
+    # step that raised 'scoop' does so right after a post-click navigation to a
+    # brand-new page — the driver we just quit is the only one we touch.
+    # NOTE: the recursion owns its own ScoopError handling via run_student_flow's
+    # outer except SlotScoopedError — it keeps re-entering until RACE_ATTEMPTS is
+    # exhausted, then surfaces the final failure upward. A normal (non-scoop)
+    # failure bubbles up and stops the race.
+    db.clear_checkpoint(key)
+    return run_student_flow(student, use_headless, logging.getLogger("scoop_race"),
+                            stop_event, None, immediate=True)
+
+
 def bounded_backoff(attempt: int, base: int = 3, cap: int = 60) -> int:
     return min(cap, int(base * (2 ** max(0, attempt - 1))))
 
@@ -976,6 +1100,39 @@ def check_slot_via_api(level: str, logger: logging.Logger) -> Dict:
             if not disabled and ("select" in txt or "book" in txt or "buchen" in txt or "next" in txt):
                 bookable.append(ex)
 
+        # — Backend seat count exposure: surface whatever occupancy the API
+        # actually carries per exam so a non-DOM check captures real capacity
+        # (config.csv / dashboard can act on it before racing the DOM).
+        _SEAT_KEYS = ("capacity", "maxParticipants", "maxSeats", "freeCap", "capacityLeft",
+                      "bookableSeats", "freeSeats", "remainingSeats", "openSlots", "placesLeft",
+                      "quota", "roomCapacity", "maxpeople", "free", "seatsLeft", "availableSeats")
+        def _seat_field(ex: Dict) -> Optional[int]:
+            for k in _SEAT_KEYS:
+                for ck in (k, k.lower(), k.upper()):
+                    v = ex.get(ck)
+                    if v is not None:
+                        try:
+                            return int(v)
+                        except (TypeError, ValueError):
+                            continue
+            return None
+
+        seat_rows = []
+        for ex in exams:
+            if not isinstance(ex, dict):
+                continue
+            seat = _seat_field(ex)
+            spot = (ex.get("locationName") or ex.get("city") or ex.get("place") or "?")
+            first_date = (ex.get("date") or ex.get("examDate") or ex.get("startDate") or ex.get("firstDay") or "")
+            seat_rows.append({"place": spot, "date": str(first_date)[:10], "seat_count": seat})
+        result["seats"] = seat_rows
+        seat_counts = [r["seat_count"] for r in seat_rows if isinstance(r["seat_count"], int)]
+        result["total_seats_shown"] = sum(seat_counts) if seat_counts else None
+        # min/max: if all exam entries carry the same number, that is the
+        # per-finder seating capacity for that location.
+        result["min_seat_count"] = min(seat_counts) if seat_counts else None
+        result["max_seat_count"] = max(seat_counts) if seat_counts else None
+
         result["api_ok"] = True
         result["exams"] = bookable
         if bookable:
@@ -983,9 +1140,17 @@ def check_slot_via_api(level: str, logger: logging.Logger) -> Dict:
             result["slots_found"] = len(bookable)
             names = [ex.get("courselevelShortcut", "") or ex.get("level", "") for ex in bookable]
             locs = [ex.get("locationName", "") or ex.get("city", "") for ex in bookable]
-            result["message"] = f"API: {len(bookable)} bookable — {' '.join(f'{n}@{l}' for n, l in zip(names, locs))}"
+            seat_txt = ""
+            if result["total_seats_shown"] is not None:
+                seat_txt = f" | seats={result['total_seats_shown']} (min {result['min_seat_count']}/max {result['max_seat_count']}/row)"
+            result["message"] = f"API: {len(bookable)} bookable — {' '.join(f'{n}@{l}' for n, l in zip(names, locs))}{seat_txt}"
         else:
-            result["message"] = f"API: no bookable slots (found {len(exams)} total exams)"
+            if result["total_seats_shown"] is not None:
+                result["message"] = (f"API: no bookable slots (found {len(exams)} total exams, "
+                                     f"reported seats={result['total_seats_shown']}, "
+                                     f"row-min={result['min_seat_count']}, row-max={result['max_seat_count']})")
+            else:
+                result["message"] = f"API: no bookable slots (found {len(exams)} total exams)"
         return result
 
     except Exception as exc:
@@ -2430,6 +2595,15 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                 consecutive_errors = 0
                 step1_done = True
                 db.save_checkpoint(student_key, 1)
+                # HIGH-DEMAND guard: the button was clickable but a slot can be
+                # grabbed in the ms between our scan and our click. If Goethe now
+                # interjects "high demand / cannot be booked at the moment", a
+                # human gives up — we re-enter the race.
+                try:
+                    wait_for_document_ready(driver, timeout=30)
+                    _raise_if_scooped(driver, logger, where="after step-1 click")
+                except SlotScoopedError:
+                    return _scoop_retry_race(driver, student, logger, stop_event, use_headless)
                 break
 
             except (TimeoutException, StaleElementReferenceException, NoSuchElementException) as exc:
@@ -2485,6 +2659,10 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             driver.save_screenshot(f"debug_options_{name}.png")
             raise RuntimeError("Module selection (/coe/options) failed")
 
+        picked_race = _scoop_step_guard(driver, student, logger, stop_event, use_headless, "after /coe/options")
+        if picked_race:
+            return picked_race
+
         random_human_delay(0.1, 0.3)
         if stop_event.is_set():
             logger.warning("Stop requested by user. Aborting.")
@@ -2497,6 +2675,9 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
             db.add_log(sk, level, "❌ /coe/selection gate failed")
             driver.save_screenshot(f"debug_selection_{name}.png")
             raise RuntimeError("Selection gate (/coe/selection) failed")
+        picked_race = _scoop_step_guard(driver, student, logger, stop_event, use_headless, "after /coe/selection")
+        if picked_race:
+            return picked_race
         db.save_checkpoint(student_key, 13)  # selection gate cleared
 
         if not _handle_cas_login_if_needed(driver, student, logger):
@@ -2514,6 +2695,9 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                 raise RuntimeError("Step 1 (Name & Birth) failed")
             db.add_log(sk, level, "✅ Step 1 done — Name & Birth")
             db.save_checkpoint(student_key, 2)
+            picked_race = _scoop_step_guard(driver, student, logger, stop_event, use_headless, "after wizard step1")
+            if picked_race:
+                return picked_race
 
         random_human_delay(0.05, 0.2)
         if stop_event.is_set():
@@ -2536,6 +2720,9 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                 raise RuntimeError("Step 2 (Address & Motivation) failed")
             db.add_log(sk, level, "✅ Step 2 done — Address & Motivation")
             db.save_checkpoint(student_key, 3)
+            picked_race = _scoop_step_guard(driver, student, logger, stop_event, use_headless, "after wizard step2")
+            if picked_race:
+                return picked_race
 
         random_human_delay(0.05, 0.2)
         if stop_event.is_set():
@@ -2552,6 +2739,9 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                 raise RuntimeError("Step 3 (Payment) failed")
             db.add_log(sk, level, "✅ Step 3 done — Payment method selected")
             db.save_checkpoint(student_key, 4)
+            picked_race = _scoop_step_guard(driver, student, logger, stop_event, use_headless, "after wizard step3")
+            if picked_race:
+                return picked_race
 
         random_human_delay(0.05, 0.2)
         if stop_event.is_set():
@@ -2568,6 +2758,9 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                 raise RuntimeError("Step 4 (Promo) failed")
             db.add_log(sk, level, "✅ Step 4 done — Promo code")
             db.save_checkpoint(student_key, 5)
+            picked_race = _scoop_step_guard(driver, student, logger, stop_event, use_headless, "after wizard step4")
+            if picked_race:
+                return picked_race
 
         random_human_delay(0.05, 0.2)
         if stop_event.is_set():
@@ -2584,6 +2777,9 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
                 raise RuntimeError("Step 5 (Review & Confirm) failed")
             db.add_log(sk, level, "✅ Step 5 done — Booking submitted!")
             db.save_checkpoint(student_key, 6)
+            picked_race = _scoop_step_guard(driver, student, logger, stop_event, use_headless, "after wizard step5")
+            if picked_race:
+                return picked_race
 
         random_human_delay(0.05, 0.2)
         if stop_event.is_set():
@@ -2609,6 +2805,14 @@ def run_student_flow(student: Dict[str, str], use_headless: bool, logger: loggin
         logger.info("Interrupted by user.")
         result["status"] = "interrupted"
         db.add_log(sk, level, "⏹️ Interrupted by user")
+    except SlotScoopedError as exc:
+        # High-demand interjection found at a step that did not have an inline
+        # guard (or the inline guard raised in the handler body). Re-enter the
+        # race instead of failing the whole run.
+        logger.warning("Slot scooped at an unguarded step — re-entering race: %s", exc)
+        db.add_log(sk, level, f"⚔️ Scoop during wizard — re-entering race ({exc})")
+        db.clear_checkpoint(student_key)
+        result = _scoop_retry_race(driver, student, logger, stop_event, use_headless)
     except Exception as exc:
         CIRCUIT_BREAKER.record_failure(_classify_error(exc))
         msg = str(exc)[:200]
