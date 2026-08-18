@@ -1,2 +1,2 @@
-name,email,password,level,city,dob,booking_datetime,first_name,surname,place_of_birth,phone,contact_number,address,postal_code,country,phone_prefix,motivation,promo_code
-Ali Ali,hamdamstyle@gmail.com,CHANGE_MY_PASSWORD,B1,Lahore,15.08.2000,2026-09-11T11:12,,,,,,,,,,
+name,email,password,level,city,dob,booking_datetime,first_name,surname,place_of_birth,phone,contact_number,address,postal_code,country,phone_prefix,motivation,promo_code,modules
+Ali Ali,hamdamstyle@gmail.com,CHANGE_MY_PASSWORD,B1,Lahore,15.08.2000,2026-09-11T11:12,,,,,,,,,,,schreiben,sprechen

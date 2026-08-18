@@ -252,6 +252,15 @@ def _validate_students(students: List[Dict]) -> None:
                 dt.datetime.fromisoformat(bdt)
             except ValueError:
                 errors.append(f"Row {idx}: invalid booking_datetime '{bdt}' (use ISO format YYYY-MM-DDTHH:MM)")
+        modules = s.get("modules", "").strip()
+        if modules:
+            valid_mods = {"lesen", "lesen/hören", "lesen/hoeren", "hören", "hoeren",
+                          "lesen", "schreiben", "sprechen", "reading", "listening",
+                          "writing", "speaking", "lesen & hören", "schreiben & sprechen"}
+            for m in modules.split(","):
+                if m.strip().lower() not in valid_mods:
+                    errors.append(f"Row {idx}: invalid module '{m.strip()}' "
+                                  "(valid: lesen, hören, schreiben, sprechen / reading, listening, writing, speaking)")
 
     if errors:
         raise ValueError("Config validation failed:\n" + "\n".join(errors))
@@ -1657,9 +1666,10 @@ def _handle_coe_options_modules(driver: webdriver.Chrome, student: Dict[str, str
     """Handle /coe/options — the module-picker page that opens after clicking
     'Select modules' / 'Book' on the exam finder.
 
-    For a full exam all module checkboxes come pre-checked. We make sure at
-    least one module is selected (skipping any that are disabled / fully
-    booked), then click CONTINUE.
+    If student has a 'modules' list (e.g. 'schreiben,sprechen'), only those
+    module checkboxes are kept selected (all others unchecked). Empty list =
+    full exam: all pre-checked modules stay selected. Fully-booked/disabled
+    module rows are never selected. Then click CONTINUE.
     """
     url = (driver.current_url or "").lower()
     body_hint = ""
@@ -1676,27 +1686,58 @@ def _handle_coe_options_modules(driver: webdriver.Chrome, student: Dict[str, str
         wait_for_document_ready(driver, timeout=25)
         random_human_delay(0.1, 0.3)
 
-        # Module checkboxes. Pre-checked ones are fine. If none selected,
-        # tick the enabled ones (skip rows that say 'Fully booked').
+        # Module checkboxes. Full exam = all pre-checked stay. If student has a
+        # 'modules' list, keep only the requested modules (uncheck the rest).
+        # Skip rows that say 'Fully booked'.
         cbs = driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-        selected_hint = ""
+        requested = student.get("modules", "") or ""
+        if isinstance(requested, str):
+            requested = [m.strip().lower() for m in requested.split(",") if m.strip()]
+        else:
+            requested = [str(m).strip().lower() for m in requested]
+
         if cbs:
-            any_checked = any(c.is_selected() for c in cbs if _coe_gate_clickable_for(c))
-            if not any_checked:
+            if requested:
+                # Only selected modules: ensure requested ones are checked,
+                # uncheck every other module.
+                matched = False
                 for c in cbs:
                     try:
-                        if not c.is_enabled() or not c.is_displayed():
-                            continue
                         parent = normalize_text(c.find_element(By.XPATH, "..").text)
-                        if "fully booked" in parent:
+                        if not _coe_gate_clickable_for(c):
                             continue
-                        human_move_and_click(driver, c)
-                        random_human_delay(0.05, 0.15)
-                        selected_hint = parent[:40]
+                        pl = parent.lower()
+                        want = any(k in pl for k in requested)
+                        if want:
+                            if not c.is_selected():
+                                human_move_and_click(driver, c)
+                                random_human_delay(0.05, 0.15)
+                            logger.info("Module ON: %s", parent[:50])
+                            matched = True
+                        else:
+                            if c.is_selected():
+                                human_move_and_click(driver, c)
+                                random_human_delay(0.05, 0.15)
+                                logger.info("Module OFF: %s", parent[:50])
                     except Exception:
                         continue
-                logger.info("Selected module(s): %s", selected_hint or "?")
+                if not matched:
+                    logger.warning("Requested modules not found on page — keeping full exam")
             else:
+                # Full exam: make sure at least one is selected.
+                any_checked = any(c.is_selected() for c in cbs if _coe_gate_clickable_for(c))
+                if not any_checked:
+                    for c in cbs:
+                        try:
+                            if not c.is_enabled() or not c.is_displayed():
+                                continue
+                            parent = normalize_text(c.find_element(By.XPATH, "..").text)
+                            if "fully booked" in parent:
+                                continue
+                            human_move_and_click(driver, c)
+                            random_human_delay(0.05, 0.15)
+                        except Exception:
+                            continue
                 logger.info("Modules already pre-selected (general exam)")
         else:
             logger.warning("No module checkboxes found on /coe/options — continuing anyway")

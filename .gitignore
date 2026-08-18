@@ -22,3 +22,6 @@ presentation/
 *.mp4
 *.pptx
 goethe-bot-sa.json
+# Runtime guard state
+pk_guard_state.json
+pk_guard_output.log
