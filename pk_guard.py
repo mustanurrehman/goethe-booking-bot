@@ -145,6 +145,18 @@ def main() -> int:
                     "button_text": btn[0].text.strip()[:60],
                     "row_text": row[:140],
                 }
+                # Which city is this bookable slot for? Target is Lahore; a live
+                # SELECT MODULES on the Karachi row is the TEST slot, Lahore is
+                # the FINAL booking.
+                row_low = row.lower()
+                if "karachi" in row_low:
+                    payload["slot_city"] = "Karachi"
+                elif "lahore" in row_low:
+                    payload["slot_city"] = "Lahore"
+                elif "islamabad" in row_low:
+                    payload["slot_city"] = "Islamabad"
+                else:
+                    payload["slot_city"] = row_low[:40]
                 payload.update(api_extra)
                 write_state(payload)
                 return 0  # exit; the caller/loop will action the booking
